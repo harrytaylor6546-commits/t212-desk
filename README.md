@@ -19,6 +19,33 @@ Telegram  ->  research  ->  analyst  ->  proposal  ->  risk gate  ->  you confir
 
 The same commands work from a laptop CLI, which is useful for the first connection test.
 
+## Campaign mode (hands-off)
+
+```
+/campaign start 200 tp=5 sl=4 goal=30 days=7
+```
+
+The desk then runs a loop on its own:
+
+1. Pre-screens the watchlist (price movement plus news volume, no cost), sends the top three to the analyst, and if one is a BUY above the confidence bar it messages you a recommendation sized to the campaign slot.
+2. You reply `APPROVE` (or `APPROVE LIVE` on a live account). Anything else leaves it waiting; `/skip` passes.
+3. It checks every open campaign trade on each tick and closes automatically at the take-profit, the stop-loss, or the three-day limit, then immediately looks for the next trade.
+4. It stops when total profit reaches the goal (closing everything), when the days run out, or when you send `/campaign stop`.
+
+Settings: `tp` take-profit %, `sl` stop-loss %, `goal` % of budget, `days`, `open` max simultaneous trades. Defaults are tp=4 sl=10 goal=100 days=7 open=1, which are the numbers originally asked for. Note the arithmetic: risking 10 to make 4 needs a 72% hit rate to break even, and doubling at 4% a trade takes about 18 straight wins. tp=5 sl=4 goal=30 is a more realistic starting point.
+
+`/watch` shows the watchlist, `/watch add RRl_EQ` and `/watch remove ...` edit it, `/watch reset` restores the default 40 liquid UK and US names.
+
+**Ticks.** Exits only happen when a tick runs. The Vercel cron in `vercel.json` runs once a day as a fallback, which is not enough for a 4% target. Point a free external scheduler at the tick endpoint every 15 minutes during market hours. On cron-job.org:
+
+- URL: `https://<your-app>.vercel.app/api/cron/tick`
+- Header: `Authorization: Bearer <CRON_SECRET>`
+- Schedule: every 15 minutes, Monday to Friday, 08:00 to 21:00 UK time
+
+If you're on Vercel Pro you can instead set the cron schedule to `*/15 7-20 * * 1-5`.
+
+`AUTO_CLOSE=false` in the env vars turns automatic exits off. The bot then messages EXIT and waits for you to `/close`.
+
 ## Phone setup (Telegram + Vercel)
 
 **1. Create the bot.** In Telegram, message `@BotFather`, send `/newbot`, pick a name. Copy the token it gives you.

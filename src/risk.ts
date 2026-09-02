@@ -61,9 +61,14 @@ export async function checkRisk(intent: OrderIntent): Promise<RiskVerdict> {
     reasons.push(`selling ${intent.quantity} but only ${intent.heldQuantity} held`);
   }
 
-  const today = new Date().toISOString().slice(0, 10);
-  const todayCount = (await readLedger()).filter((e) => e.at.startsWith(today) && e.env === config.t212.env).length;
-  if (todayCount >= r.maxOrdersPerDay) reasons.push(`already submitted ${todayCount} orders today, cap is ${r.maxOrdersPerDay}`);
+  // The daily cap limits new exposure. Sells reduce exposure and are never blocked by it.
+  if (intent.side === "BUY") {
+    const today = new Date().toISOString().slice(0, 10);
+    const todayCount = (await readLedger()).filter(
+      (e) => e.at.startsWith(today) && e.env === config.t212.env && e.side === "BUY",
+    ).length;
+    if (todayCount >= r.maxOrdersPerDay) reasons.push(`already submitted ${todayCount} buys today, cap is ${r.maxOrdersPerDay}`);
+  }
 
   return { ok: reasons.length === 0, reasons, estimatedValue: value };
 }

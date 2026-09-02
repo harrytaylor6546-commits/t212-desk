@@ -19,6 +19,10 @@ export interface OpenTrade {
   stopPrice: number | null;
   horizonDays: number;
   maxHoldDays: number;
+  /** Cost in account currency at entry, used for percentage P/L. */
+  cost?: number;
+  /** Opened by the campaign autopilot, so campaign exit rules apply. */
+  campaign?: boolean;
 }
 
 export const MAX_HOLD_DAYS = 3;

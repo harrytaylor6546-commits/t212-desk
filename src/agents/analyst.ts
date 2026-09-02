@@ -63,7 +63,7 @@ Standards:
 
 export async function analyse(
   dossier: Dossier,
-  context: { freeCash: number; currency: string; heldQuantity: number },
+  context: { freeCash: number; currency: string; heldQuantity: number; rules?: string },
 ): Promise<Proposal> {
   const client = new Anthropic();
   const response = await client.messages.parse({
@@ -77,6 +77,7 @@ export async function analyse(
         role: "user",
         content: [
           `Account context: free cash ${context.freeCash.toFixed(2)} ${context.currency}. Currently held: ${context.heldQuantity} shares of ${dossier.ticker}.`,
+          context.rules ? `Desk rules in force: ${context.rules}` : "",
           `Produce a proposal for ${dossier.ticker} from the dossier below.`,
           "",
           renderDossier(dossier),

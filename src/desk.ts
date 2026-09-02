@@ -14,6 +14,20 @@ import { listProposals, loadProposal, newId, saveProposal, type StoredProposal }
 
 const client = new T212Client();
 
+export function positions() {
+  return client.portfolio();
+}
+
+/** Resolve tickers to names, silently dropping any Trading 212 does not know. */
+export async function instrumentsFor(tickers: string[]): Promise<{ ticker: string; name: string }[]> {
+  const out: { ticker: string; name: string }[] = [];
+  for (const t of tickers) {
+    const i = await client.instrument(t);
+    if (i) out.push({ ticker: i.ticker, name: i.name });
+  }
+  return out;
+}
+
 export function envLabel(): string {
   return config.t212.env === "live" ? "LIVE (real money)" : "PRACTICE (fake money)";
 }
@@ -107,11 +121,11 @@ export function formatProposal(p: StoredProposal): string {
   return lines.join("\n");
 }
 
-export async function propose(input: string): Promise<{ stored: StoredProposal; text: string }> {
+export async function propose(input: string, opts: { rules?: string } = {}): Promise<{ stored: StoredProposal; text: string }> {
   const { ticker, name } = await resolveTicker(input);
   const [dossier, context, instrument] = await Promise.all([gather(ticker, name), accountContext(ticker), client.instrument(ticker)]);
   if (!context.lastPrice && dossier.price?.last) context.lastPrice = dossier.price.last;
-  const proposal = await analyse(dossier, context);
+  const proposal = await analyse(dossier, { ...context, rules: opts.rules });
   const stored: StoredProposal = {
     id: newId(ticker),
     createdAt: new Date().toISOString(),
@@ -219,7 +233,7 @@ export async function planApprove(id: string, qtyOverride?: number): Promise<{ p
   return { plan, text: lines.join("\n"), blocked: verdict.ok ? [] : verdict.reasons };
 }
 
-export async function executeApprove(plan: ApprovePlan): Promise<string> {
+export async function executeApprove(plan: ApprovePlan, opts: { campaign?: boolean } = {}): Promise<string> {
   const p = await loadProposal(plan.proposalId);
   if (p.status !== "pending") throw new Error(`proposal ${p.id} is ${p.status}, not pending`);
   // Trading 212 has no side field: positive quantity buys, negative sells.
@@ -247,6 +261,8 @@ export async function executeApprove(plan: ApprovePlan): Promise<string> {
         stopPrice: plan.stopPrice,
         horizonDays: plan.horizonDays,
         maxHoldDays: MAX_HOLD_DAYS,
+        cost: plan.estimatedValue,
+        campaign: opts.campaign,
       });
     } else {
       await removeOpenTrade(plan.ticker);
@@ -326,6 +342,20 @@ export async function executeClose(plan: ClosePlan): Promise<string> {
   await recordSubmitted({ ticker: plan.ticker, side: "SELL", quantity: plan.quantity, env: config.t212.env });
   await removeOpenTrade(plan.ticker);
   return `submitted. broker order ${order.id} status ${order.status}`;
+}
+
+/**
+ * Close without a confirmation step. Only the campaign autopilot calls this, and only
+ * for exits (take-profit, stop-loss, time stop, goal reached) the user opted into.
+ */
+export async function closeNow(ticker: string, quantity: number): Promise<{ text: string; orderId: number }> {
+  const held = (await client.portfolio()).find((p) => p.ticker === ticker)?.quantity ?? 0;
+  const qty = Math.min(Math.abs(quantity), held);
+  if (qty <= 0) throw new Error(`broker shows no position in ${ticker}`);
+  const order = await client.placeMarket({ ticker, quantity: -qty });
+  await recordSubmitted({ ticker, side: "SELL", quantity: qty, env: config.t212.env });
+  await removeOpenTrade(ticker);
+  return { text: `sold ${qty} x ${ticker} at market. broker order ${order.id} ${order.status}`, orderId: order.id };
 }
 
 export async function untrack(ticker: string): Promise<string> {
