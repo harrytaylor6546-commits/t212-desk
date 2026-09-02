@@ -6,15 +6,25 @@
   "description": "Research agents plus an approve-then-execute desk for a Trading 212 account. Practice mode by default.",
   "scripts": {
     "desk": "tsx src/cli.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
+    "@vercel/blob": "^2.8.0",
+    "@vercel/functions": "^3.9.5",
     "dotenv": "^16.4.5",
+    "next": "^16.3.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }

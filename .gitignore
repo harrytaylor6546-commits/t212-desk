@@ -1,5 +1,8 @@
 node_modules
 dist
+.next
+next-env.d.ts
+.vercel
 .env
-data/cache
-data/proposals
+.env*.local
+data/

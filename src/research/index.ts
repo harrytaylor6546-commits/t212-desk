@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { config } from "../config.js";
-import { googleNews, reddit, stocktwits, tavily, x, yahooPrice } from "./sources.js";
-import type { Dossier, Item } from "./types.js";
+import { config } from "../config";
+import { googleNews, reddit, stocktwits, tavily, x, yahooPrice } from "./sources";
+import type { Dossier, Item } from "./types";
 
 /**
  * Map a Trading 212 ticker to a Yahoo Finance symbol.
@@ -56,9 +56,14 @@ export async function gather(t212Ticker: string, name: string): Promise<Dossier>
     errors,
   };
 
-  const dir = path.join(config.dataDir, "cache", "dossiers");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `${t212Ticker}-${Date.now()}.json`), JSON.stringify(dossier, null, 2));
+  // Keep a local copy for later review. Serverless filesystems are read-only, so this is best-effort.
+  try {
+    const dir = path.join(config.dataDir, "cache", "dossiers");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${t212Ticker}-${Date.now()}.json`), JSON.stringify(dossier, null, 2));
+  } catch {
+    /* ignore */
+  }
   return dossier;
 }
 

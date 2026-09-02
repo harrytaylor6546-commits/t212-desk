@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
-import { config } from "./config.js";
+import { config } from "./config";
+import { store } from "./store";
 
 /**
  * Open trades the desk is responsible for exiting.
@@ -23,34 +22,28 @@ export interface OpenTrade {
 }
 
 export const MAX_HOLD_DAYS = 3;
+const KEY = "open-trades";
 
-const file = () => path.join(config.dataDir, "open-trades.json");
-
-export function listOpenTrades(): OpenTrade[] {
-  const f = file();
-  const all = fs.existsSync(f) ? (JSON.parse(fs.readFileSync(f, "utf8")) as OpenTrade[]) : [];
-  return all.filter((t) => t.env === config.t212.env);
+async function readAll(): Promise<OpenTrade[]> {
+  return (await store.get<OpenTrade[]>(KEY)) ?? [];
 }
 
-function writeAll(trades: OpenTrade[]): void {
-  fs.mkdirSync(path.dirname(file()), { recursive: true });
-  fs.writeFileSync(file(), JSON.stringify(trades, null, 2));
+export async function listOpenTrades(): Promise<OpenTrade[]> {
+  return (await readAll()).filter((t) => t.env === config.t212.env);
 }
 
-export function addOpenTrade(trade: OpenTrade): void {
-  const f = file();
-  const all = fs.existsSync(f) ? (JSON.parse(fs.readFileSync(f, "utf8")) as OpenTrade[]) : [];
+export async function addOpenTrade(trade: OpenTrade): Promise<void> {
+  const all = await readAll();
   all.push(trade);
-  writeAll(all);
+  await store.set(KEY, all);
 }
 
-export function removeOpenTrade(ticker: string): OpenTrade | undefined {
-  const f = file();
-  const all = fs.existsSync(f) ? (JSON.parse(fs.readFileSync(f, "utf8")) as OpenTrade[]) : [];
+export async function removeOpenTrade(ticker: string): Promise<OpenTrade | undefined> {
+  const all = await readAll();
   const idx = all.findIndex((t) => t.ticker === ticker && t.env === config.t212.env);
   if (idx < 0) return undefined;
   const [removed] = all.splice(idx, 1);
-  writeAll(all);
+  await store.set(KEY, all);
   return removed;
 }
 
@@ -104,5 +97,11 @@ export function checkExit(trade: OpenTrade, currentPrice: number | undefined, no
     reasons.push("no current price from broker, check manually");
   }
 
-  return { shouldExit: reasons.some((r) => r.startsWith("time stop") || r.startsWith("target") || r.startsWith("stop")), urgent, reasons, daysHeld, daysLeft };
+  return {
+    shouldExit: reasons.some((r) => r.startsWith("time stop") || r.startsWith("target") || r.startsWith("stop")),
+    urgent,
+    reasons,
+    daysHeld,
+    daysLeft,
+  };
 }

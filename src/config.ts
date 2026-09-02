@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 export type T212Env = "practice" | "live";
 
@@ -39,7 +39,12 @@ export const config = {
       .map((s) => s.trim().toUpperCase())
       .filter(Boolean),
   },
-  dataDir: fileURLToPath(new URL("../data/", import.meta.url)),
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
+    chatId: process.env.TELEGRAM_CHAT_ID ?? "",
+    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? "",
+  },
+  dataDir: path.join(process.cwd(), "data"),
 };
 
 export function requireT212Key(): void {

@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
-import { config } from "./config.js";
+import { config } from "./config";
+import { store } from "./store";
 
 export interface OrderIntent {
   ticker: string;
@@ -25,18 +24,16 @@ interface LedgerEntry {
   env: string;
 }
 
-const ledgerFile = () => path.join(config.dataDir, "orders-ledger.json");
+const KEY = "orders-ledger";
 
-function readLedger(): LedgerEntry[] {
-  const f = ledgerFile();
-  return fs.existsSync(f) ? (JSON.parse(fs.readFileSync(f, "utf8")) as LedgerEntry[]) : [];
+async function readLedger(): Promise<LedgerEntry[]> {
+  return (await store.get<LedgerEntry[]>(KEY)) ?? [];
 }
 
-export function recordSubmitted(entry: Omit<LedgerEntry, "at">): void {
-  const ledger = readLedger();
+export async function recordSubmitted(entry: Omit<LedgerEntry, "at">): Promise<void> {
+  const ledger = await readLedger();
   ledger.push({ at: new Date().toISOString(), ...entry });
-  fs.mkdirSync(path.dirname(ledgerFile()), { recursive: true });
-  fs.writeFileSync(ledgerFile(), JSON.stringify(ledger, null, 2));
+  await store.set(KEY, ledger.slice(-500));
 }
 
 /**
@@ -44,7 +41,7 @@ export function recordSubmitted(entry: Omit<LedgerEntry, "at">): void {
  * These are deliberately dumb and deterministic. The analyst never sees them
  * and cannot argue with them.
  */
-export function checkRisk(intent: OrderIntent): RiskVerdict {
+export async function checkRisk(intent: OrderIntent): Promise<RiskVerdict> {
   const reasons: string[] = [];
   const value = intent.quantity * intent.estimatedPrice;
   const r = config.risk;
@@ -65,7 +62,7 @@ export function checkRisk(intent: OrderIntent): RiskVerdict {
   }
 
   const today = new Date().toISOString().slice(0, 10);
-  const todayCount = readLedger().filter((e) => e.at.startsWith(today) && e.env === config.t212.env).length;
+  const todayCount = (await readLedger()).filter((e) => e.at.startsWith(today) && e.env === config.t212.env).length;
   if (todayCount >= r.maxOrdersPerDay) reasons.push(`already submitted ${todayCount} orders today, cap is ${r.maxOrdersPerDay}`);
 
   return { ok: reasons.length === 0, reasons, estimatedValue: value };

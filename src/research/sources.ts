@@ -1,5 +1,5 @@
-import { config } from "../config.js";
-import type { Item, PriceSummary } from "./types.js";
+import { config } from "../config";
+import type { Item, PriceSummary } from "./types";
 
 // Several public endpoints (Reddit, StockTwits, Yahoo) return 403 to non-browser user agents.
 const UA =

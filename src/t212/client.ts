@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
-import { config, requireT212Key } from "../config.js";
+import { config, requireT212Key } from "../config";
+import { store } from "../store";
 import type {
   AccountCash,
   AccountInfo,
@@ -11,7 +10,7 @@ import type {
   Position,
   StopLimitOrderRequest,
   StopOrderRequest,
-} from "./types.js";
+} from "./types";
 
 export class T212Error extends Error {
   constructor(
@@ -23,12 +22,19 @@ export class T212Error extends Error {
   }
 }
 
+interface InstrumentCache {
+  fetchedAt: string;
+  items: Instrument[];
+}
+
+let instrumentMemo: InstrumentCache | undefined;
+
 /**
  * Minimal Trading 212 public API client.
  *
  * Practice (demo) and live share the same paths; only the host differs.
  * Live accounts currently accept MARKET orders only through the API.
- * Instruments are cached to disk because that endpoint allows one call per 50s.
+ * Instruments are cached for a day because that endpoint allows one call per 50s.
  */
 export class T212Client {
   private readonly base = config.t212.baseUrl;
@@ -69,7 +75,7 @@ export class T212Client {
         Accept: "application/json",
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(25_000),
     });
     const text = await res.text();
     if (!res.ok) throw new T212Error(res.status, text, p);
@@ -94,25 +100,27 @@ export class T212Client {
     return this.request("GET", `/equity/portfolio/${encodeURIComponent(ticker)}`, undefined, "position", 1000);
   }
 
-  // ---- instruments (cached 24h on disk) ----
+  // ---- instruments (cached 24h in the store, plus in memory) ----
   async instruments(force = false): Promise<Instrument[]> {
-    const file = path.join(config.dataDir, "cache", `instruments-${this.env}.json`);
-    if (!force && fs.existsSync(file)) {
-      const age = Date.now() - fs.statSync(file).mtimeMs;
-      if (age < 24 * 3600 * 1000) {
-        return JSON.parse(fs.readFileSync(file, "utf8")) as Instrument[];
-      }
+    const key = `instruments-${this.env}`;
+    const fresh = (c: InstrumentCache | null | undefined) =>
+      !!c && Date.now() - new Date(c.fetchedAt).getTime() < 24 * 3600 * 1000;
+    if (!force && fresh(instrumentMemo)) return instrumentMemo!.items;
+    const cached = force ? null : await store.get<InstrumentCache>(key);
+    if (fresh(cached)) {
+      instrumentMemo = cached!;
+      return cached!.items;
     }
-    const list = await this.request<Instrument[]>(
+    const items = await this.request<Instrument[]>(
       "GET",
       "/equity/metadata/instruments",
       undefined,
       "instruments",
       50_000,
     );
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(list));
-    return list;
+    instrumentMemo = { fetchedAt: new Date().toISOString(), items };
+    await store.set(key, instrumentMemo);
+    return items;
   }
 
   async findInstruments(query: string): Promise<Instrument[]> {

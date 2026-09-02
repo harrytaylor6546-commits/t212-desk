@@ -1,7 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
-import { config } from "./config.js";
-import type { Proposal } from "./agents/analyst.js";
+import { store } from "./store";
+import type { Proposal } from "./agents/analyst";
 
 export interface StoredProposal {
   id: string;
@@ -14,26 +12,35 @@ export interface StoredProposal {
   note?: string;
 }
 
-const dir = () => path.join(config.dataDir, "proposals");
+const KEY = "proposals";
 
-export function saveProposal(p: StoredProposal): void {
-  fs.mkdirSync(dir(), { recursive: true });
-  fs.writeFileSync(path.join(dir(), `${p.id}.json`), JSON.stringify(p, null, 2));
+async function readAll(): Promise<StoredProposal[]> {
+  return (await store.get<StoredProposal[]>(KEY)) ?? [];
 }
 
-export function loadProposal(id: string): StoredProposal {
-  const f = path.join(dir(), `${id}.json`);
-  if (!fs.existsSync(f)) throw new Error(`no proposal ${id}`);
-  return JSON.parse(fs.readFileSync(f, "utf8")) as StoredProposal;
+export async function saveProposal(p: StoredProposal): Promise<void> {
+  const all = await readAll();
+  const idx = all.findIndex((x) => x.id === p.id);
+  if (idx >= 0) all[idx] = p;
+  else all.push(p);
+  // keep the document small
+  const trimmed = all.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 200);
+  await store.set(KEY, trimmed);
 }
 
-export function listProposals(): StoredProposal[] {
-  if (!fs.existsSync(dir())) return [];
-  return fs
-    .readdirSync(dir())
-    .filter((f) => f.endsWith(".json"))
-    .map((f) => JSON.parse(fs.readFileSync(path.join(dir(), f), "utf8")) as StoredProposal)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+export async function loadProposal(id: string): Promise<StoredProposal> {
+  const all = await readAll();
+  // allow a unique suffix match so phone typing is shorter, e.g. "RRlEQ" or the last 4 digits
+  const exact = all.find((p) => p.id === id);
+  if (exact) return exact;
+  const partial = all.filter((p) => p.id.endsWith(id) || p.id.includes(id));
+  if (partial.length === 1) return partial[0];
+  if (partial.length > 1) throw new Error(`"${id}" matches ${partial.length} proposals, be more specific`);
+  throw new Error(`no proposal ${id}`);
+}
+
+export async function listProposals(): Promise<StoredProposal[]> {
+  return (await readAll()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export function newId(ticker: string): string {

@@ -1,8 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import type { Dossier } from "../research/types.js";
-import { renderDossier } from "../research/index.js";
+import type { Dossier } from "../research/types";
+import { renderDossier } from "../research/index";
 
 export const ProposalSchema = z.object({
   action: z.enum(["BUY", "SELL", "NO_TRADE"]),

@@ -1,62 +1,94 @@
 # t212-desk
 
-A small personal trading desk for a Trading 212 account. Research agents gather evidence, a Claude analyst writes a structured proposal, a deterministic risk gate checks it, and **you** press the button. Nothing is submitted without a typed confirmation from a human.
+A small personal trading desk for a Trading 212 account, driven from your phone through a Telegram bot. Research agents gather evidence, a Claude analyst writes a structured proposal, a deterministic risk gate checks it, and **you** confirm every order by typing the ticker back. Nothing is submitted without that.
 
 Practice (demo) mode is the default. Live mode has to be switched on deliberately.
 
+```
+Telegram  ->  research  ->  analyst  ->  proposal  ->  risk gate  ->  you confirm  ->  Trading 212
+                                                                 daily cron  ->  "EXIT" push to your phone
+```
+
 ## What it does
 
-```
-research  ->  analyst  ->  proposal on disk  ->  risk gate  ->  you confirm  ->  Trading 212
-```
-
 - **Research** pulls Google News, Reddit, StockTwits, Yahoo price history, and optionally X and Tavily, into a dossier per ticker.
-- **Analyst** (Claude) reads the dossier and returns a schema-validated proposal: action, thesis, evidence with sources, risks, invalidation level, sizing, order type. NO_TRADE is its default answer.
-- **Risk gate** is plain code, not a prompt. Max order value, max fraction of free cash, max orders per day, blocklist. The analyst never sees it and cannot argue with it.
-- **Approve** re-reads live account state, sizes the order, runs the gate, and asks you to type the ticker (or `LIVE <ticker>` in live mode) before submitting.
+- **Analyst** (Claude) reads the dossier and returns a schema-validated proposal: action, thesis, dated catalyst, evidence with sources, risks, target, stop, horizon. NO_TRADE is its default answer.
+- **Risk gate** is plain code, not a prompt. Max order value, max fraction of free cash, max orders per day, blocklist. It converts pence and foreign currencies into your account currency before sizing. The analyst never sees it.
+- **Three-day rule.** Every trade must close within three trading days. A weekday cron runs `review`, compares each open trade with its target, stop and day count, and pushes a message to Telegram when something needs closing.
+- **Confirmation.** `approve` and `close` show the full plan, then wait for you to reply with the ticker (or `LIVE <TICKER>` in live mode). Any other reply cancels. Confirmations expire after ten minutes.
 
-## Three-day rule
+The same commands work from a laptop CLI, which is useful for the first connection test.
 
-Every trade the desk opens must be closed within three trading days. This is enforced in two places:
+## Phone setup (Telegram + Vercel)
 
-- The analyst is told to find a dated catalyst inside the window and to return a target and a stop with every BUY. No catalyst, no trade.
-- `review` compares each open trade against its target, its stop and the day count, and says EXIT when any of them is hit. `close <TICKER>` sells it after you confirm.
+**1. Create the bot.** In Telegram, message `@BotFather`, send `/newbot`, pick a name. Copy the token it gives you.
 
-The Trading 212 API cannot hold a stop order for you on a live account, and nothing here runs on its own. **Run `review` once a day**, ideally before the close. If you want a reminder, put it in Windows Task Scheduler:
+**2. Keys.** Trading 212 app: menu > Settings > API (Beta), in Practice mode first. Anthropic: console.anthropic.com. Make up two long random strings for `TELEGRAM_WEBHOOK_SECRET` and `CRON_SECRET`.
+
+**3. Push this repo to GitHub** and import it into Vercel as a new project. Framework is detected as Next.js.
+
+**4. Storage.** In the Vercel project, Storage tab > Create > Blob. Connect it to the project. This adds `BLOB_READ_WRITE_TOKEN` automatically.
+
+**5. Environment variables** in the Vercel project settings (all environments):
 
 ```
-npm run desk -- review
+T212_ENV=practice
+T212_API_KEY=...
+T212_API_SECRET=...          (if your key came with one)
+ANTHROPIC_API_KEY=...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_WEBHOOK_SECRET=...  (random string)
+CRON_SECRET=...              (random string)
+RISK_MAX_ORDER_VALUE=250
 ```
 
-Broker-side stop losses set manually in the app are a good belt-and-braces addition. The desk will notice the position is gone and tell you to `close <TICKER> --untrack`.
+Leave `TELEGRAM_CHAT_ID` empty for now. Deploy.
 
-## Setup
+**6. Register the webhook.** Open this in your phone browser, with your app's domain and the secret you chose:
+
+```
+https://<your-app>.vercel.app/api/telegram/setup?secret=<TELEGRAM_WEBHOOK_SECRET>
+```
+
+It should return JSON with `"registered"`.
+
+**7. Lock it to you.** Message your bot `/start`. It replies with your chat id. Add `TELEGRAM_CHAT_ID=<that number>` to the Vercel env vars and redeploy. From then on the bot ignores everyone else.
+
+**8. Use it.** `/help` lists the commands. Start with `/account`, then `/find rolls royce`, then `/propose RRl_EQ`.
+
+The cron in `vercel.json` runs the review at 14:30 UTC on weekdays, which is 15:30 UK time in summer and 14:30 in winter. Adjust the schedule if you want it closer to the close. On the Hobby plan Vercel may run it up to an hour late.
+
+## Laptop CLI
 
 ```bash
 npm install
-cp .env.example .env
+cp .env.example .env     # fill in the same values
+npm run desk -- account
+npm run desk -- propose RRl_EQ
+npm run desk -- review
 ```
 
-Then fill in `.env`:
-
-1. In the Trading 212 app, **Switch to Practice** first, then Settings > API (Beta) > Generate. Paste the key (and secret, if you got one) into `T212_API_KEY` / `T212_API_SECRET`. Restrict the key to your IP.
-2. Add `ANTHROPIC_API_KEY`.
-3. Leave `T212_ENV=practice`.
+Locally the desk stores its state in `./data`. On Vercel it uses the Blob store. They are separate, so a proposal made on the laptop is not visible to the bot and vice versa.
 
 ## Commands
 
-```bash
-npm run desk -- account
-npm run desk -- portfolio
-npm run desk -- find rolls royce
-npm run desk -- research RRl_EQ
-npm run desk -- propose RRl_EQ
-npm run desk -- proposals
-npm run desk -- approve 202609022130-RRlEQ
-npm run desk -- orders
-```
+| Telegram | CLI | What it does |
+|---|---|---|
+| `/account` | `account` | cash and account currency |
+| `/portfolio` | `portfolio` | open positions |
+| `/find <name>` | `find <name>` | search instruments |
+| `/research <T>` | `research <T>` | print the dossier |
+| `/propose <T>` | `propose <T>` | research + analyst proposal |
+| `/proposals` | `proposals` | recent proposals |
+| `/show <id>` | `show <id>` | one proposal in full |
+| `/approve <id> [qty]` | `approve <id> [--qty N]` | risk-check, then confirm |
+| `/reject <id>` | `reject <id>` | mark rejected |
+| `/review` | `review` | check open trades against target, stop, clock |
+| `/close <T> [qty]` | `close <T> [--qty N]` | market-sell, then confirm |
+| `/untrack <T>` | `untrack <T>` | forget a trade closed in the app |
+| `/orders`, `/cancel <id>` | `orders`, `cancel <id>` | open orders at the broker |
 
-Tickers are Trading 212 format: `AAPL_US_EQ`, `RRl_EQ` (London), `SAPd_EQ` (Xetra). Use `find` if unsure.
+Tickers are Trading 212 format: `AAPL_US_EQ`, `RRl_EQ` (London), `SAPd_EQ` (Xetra). Proposal ids can be abbreviated to any unique part, e.g. the last few digits.
 
 ## What the Trading 212 API can and cannot do
 
@@ -65,26 +97,25 @@ Verified September 2026. The API is still labelled beta by Trading 212.
 - Stocks and ETFs on Invest and ISA accounts. No CFD, no crypto, no forex, no SIPP.
 - Practice accounts accept market, limit, stop and stop-limit orders.
 - **Live accounts accept market orders only** through the API. This desk enforces that.
-- No quote endpoint. Price for instruments you do not hold comes from Yahoo Finance, which is unofficial.
-- Tight rate limits. The instrument list is cached for 24 hours because that endpoint allows one call per 50 seconds.
+- No quote endpoint. Prices for instruments you do not hold come from Yahoo Finance, which is unofficial.
+- Tight rate limits. The instrument list is cached for 24 hours.
+- The API cannot hold a stop order for you on live. The daily review is the stop. Setting a stop loss manually in the app as well is sensible.
 
 ## Security model
 
-The Instagram post that prompted this project made one point worth keeping: one login shared across every bot means one mistake reaches everything. So:
-
-- Research code has **no broker keys**. It only ever touches public endpoints.
+- Research code has **no broker keys**. It only touches public endpoints.
 - The analyst has **no broker keys** and no way to submit anything. It returns JSON.
-- Only `approve` in `cli.ts` can place an order, and only after a typed confirmation in the terminal.
-- Risk caps live in `.env` and are enforced in `risk.ts` before any request leaves the machine. Set them low.
-- Use a Trading 212 practice account until the proposals have earned trust. When you do go live, generate a separate live key with an IP restriction, and consider a separate Invest account with a fixed balance.
-- `.env`, proposals and the order ledger are git-ignored.
+- Only the approve and close paths can place an order, and only after you repeat the ticker.
+- The bot answers exactly one Telegram chat id and checks a secret on every webhook call.
+- Risk caps live in env vars and are enforced in `risk.ts` before any request leaves the server. Set them low.
+- Use a practice account until the proposals have earned trust. When you go live, generate a separate live key with an IP restriction and consider a separate Invest account with a fixed balance.
 
 ## Going live later
 
-1. Run in practice for a few weeks. Review `data/proposals/` against what actually happened.
-2. Generate a live key in the app (not in practice mode this time). Restrict it to your IP.
-3. Set `T212_ENV=live` and lower `RISK_MAX_ORDER_VALUE` to something you would not miss.
-4. `approve` will demand you type `LIVE <TICKER>`.
+1. Run in practice for a few weeks. Compare `/proposals` against what happened.
+2. Generate a live key in the app, not in practice mode this time.
+3. Set `T212_ENV=live` in Vercel and lower `RISK_MAX_ORDER_VALUE` to something you would not miss. Redeploy.
+4. Confirmations now require `LIVE <TICKER>`.
 
 ## Not financial advice
 
