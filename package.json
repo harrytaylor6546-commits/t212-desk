@@ -1,0 +1,21 @@
+{
+  "name": "t212-desk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Research agents plus an approve-then-execute desk for a Trading 212 account. Practice mode by default.",
+  "scripts": {
+    "desk": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest",
+    "dotenv": "^16.4.5",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
