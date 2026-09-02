@@ -15,6 +15,21 @@ research  ->  analyst  ->  proposal on disk  ->  risk gate  ->  you confirm  -> 
 - **Risk gate** is plain code, not a prompt. Max order value, max fraction of free cash, max orders per day, blocklist. The analyst never sees it and cannot argue with it.
 - **Approve** re-reads live account state, sizes the order, runs the gate, and asks you to type the ticker (or `LIVE <ticker>` in live mode) before submitting.
 
+## Three-day rule
+
+Every trade the desk opens must be closed within three trading days. This is enforced in two places:
+
+- The analyst is told to find a dated catalyst inside the window and to return a target and a stop with every BUY. No catalyst, no trade.
+- `review` compares each open trade against its target, its stop and the day count, and says EXIT when any of them is hit. `close <TICKER>` sells it after you confirm.
+
+The Trading 212 API cannot hold a stop order for you on a live account, and nothing here runs on its own. **Run `review` once a day**, ideally before the close. If you want a reminder, put it in Windows Task Scheduler:
+
+```
+npm run desk -- review
+```
+
+Broker-side stop losses set manually in the app are a good belt-and-braces addition. The desk will notice the position is gone and tell you to `close <TICKER> --untrack`.
+
 ## Setup
 
 ```bash

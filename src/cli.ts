@@ -6,6 +6,7 @@ import { gather, renderDossier } from "./research/index.js";
 import { analyse } from "./agents/analyst.js";
 import { checkRisk, recordSubmitted } from "./risk.js";
 import { toAccountCurrency } from "./fx.js";
+import { addOpenTrade, checkExit, listOpenTrades, MAX_HOLD_DAYS, removeOpenTrade } from "./trades.js";
 import { listProposals, loadProposal, newId, saveProposal, type StoredProposal } from "./proposals.js";
 
 const args = process.argv.slice(2);
@@ -51,6 +52,8 @@ function printProposal(p: StoredProposal): void {
   for (const e of x.evidence) console.log(`    - (${e.weight}) ${e.claim}  <${e.source}>`);
   console.log(`  risks: ${x.risks.join(" | ")}`);
   console.log(`  invalidation: ${x.invalidation}`);
+  console.log(`  catalyst: ${x.catalyst}`);
+  console.log(`  horizon: ${x.horizonDays} trading day(s)  target ${x.targetPrice ?? "n/a"}  stop ${x.stopPrice ?? "n/a"}  (${p.context.priceCurrency ?? "quoted ccy"})`);
   console.log(`  sizing: ${(x.suggestedSizeFraction * 100).toFixed(1)}% of free cash (${money(p.context.freeCash, p.context.currency)})`);
   console.log(`  order: ${x.orderType}${x.limitPrice ? ` @ ${x.limitPrice}` : ""}`);
   if (p.orderId) console.log(`  broker order id: ${p.orderId}`);
@@ -195,13 +198,93 @@ async function main(): Promise<void> {
         p.status = "submitted";
         p.orderId = order.id;
         saveProposal(p);
+        if (x.action === "BUY") {
+          addOpenTrade({
+            ticker: x.ticker,
+            proposalId: p.id,
+            env: config.t212.env,
+            side: "LONG",
+            quantity,
+            openedAt: new Date().toISOString(),
+            entryPrice: quotedPrice,
+            quotedIn,
+            targetPrice: x.targetPrice,
+            stopPrice: x.stopPrice,
+            horizonDays: x.horizonDays,
+            maxHoldDays: MAX_HOLD_DAYS,
+          });
+        } else {
+          removeOpenTrade(x.ticker);
+        }
         console.log(`submitted. broker order ${order.id} status ${order.status}`);
+        if (x.action === "BUY") console.log(`clock started: close by ${MAX_HOLD_DAYS} trading days. Run "review" daily.`);
       } catch (e) {
         p.status = "failed";
         p.note = (e as Error).message;
         saveProposal(p);
         throw e;
       }
+      return;
+    }
+
+    case "review": {
+      const trades = listOpenTrades();
+      const positions = await client.portfolio();
+      if (!trades.length) {
+        console.log("no open trades tracked by the desk");
+        const untracked = positions.filter((pos) => pos.quantity > 0);
+        if (untracked.length) console.log(`note: broker shows ${untracked.length} position(s) the desk did not open: ${untracked.map((u) => u.ticker).join(", ")}`);
+        return;
+      }
+      let exits = 0;
+      for (const t of trades) {
+        const pos = positions.find((pp) => pp.ticker === t.ticker);
+        const check = checkExit(t, pos?.currentPrice);
+        const pnl = pos ? `P/L ${money(pos.ppl)}` : "not in broker portfolio";
+        const flag = check.urgent ? "EXIT NOW" : check.shouldExit ? "EXIT" : `hold (${check.daysLeft} day(s) left)`;
+        console.log(`${t.ticker.padEnd(16)} day ${check.daysHeld}/${t.maxHoldDays}  entry ${t.entryPrice}  now ${pos?.currentPrice ?? "n/a"}  target ${t.targetPrice ?? "-"}  stop ${t.stopPrice ?? "-"}  ${pnl}  => ${flag}`);
+        for (const r of check.reasons) console.log(`    - ${r}`);
+        if (check.shouldExit) exits += 1;
+        if (!pos) console.log(`    - broker no longer shows this position. If you sold it in the app, run: close ${t.ticker} --untrack`);
+      }
+      if (exits) console.log(`\n${exits} trade(s) need closing: npm run desk -- close <TICKER>`);
+      return;
+    }
+
+    case "close": {
+      const ticker = args[1];
+      if (!ticker) throw new Error("usage: desk close <TICKER> [--qty N] [--untrack]");
+      if (args.includes("--untrack")) {
+        const removed = removeOpenTrade(ticker);
+        return console.log(removed ? `stopped tracking ${ticker}` : `${ticker} was not tracked`);
+      }
+      const trade = listOpenTrades().find((t) => t.ticker === ticker);
+      const context = await accountContext(client, ticker);
+      if (context.heldQuantity <= 0) throw new Error(`broker shows no position in ${ticker}`);
+      const qtyFlag = flag("qty");
+      const quantity = qtyFlag ? Number(qtyFlag) : Math.min(trade?.quantity ?? context.heldQuantity, context.heldQuantity);
+      const price = context.lastPrice ?? 0;
+      const verdict = checkRisk({ ticker, side: "SELL", quantity, estimatedPrice: price, freeCash: context.freeCash, heldQuantity: context.heldQuantity });
+      if (trade) {
+        const check = checkExit(trade, context.lastPrice);
+        console.log(`tracked trade: day ${check.daysHeld}/${trade.maxHoldDays}, entry ${trade.entryPrice}, now ${context.lastPrice ?? "n/a"}`);
+        for (const r of check.reasons) console.log(`  - ${r}`);
+      } else {
+        console.log(`note: ${ticker} was not opened by the desk. Closing it anyway if you confirm.`);
+      }
+      console.log(`intent: SELL ${quantity} x ${ticker} at market (~${money(price)} quoted)`);
+      if (!verdict.ok) {
+        console.log("risk gate BLOCKED this order:");
+        for (const r of verdict.reasons) console.log(`  - ${r}`);
+        process.exit(2);
+      }
+      const expected = config.t212.env === "live" ? `LIVE ${ticker}` : ticker;
+      const go = await confirm(`\nSubmit this ${config.t212.env.toUpperCase()} market SELL to Trading 212?`, expected);
+      if (!go) return console.log("aborted");
+      const order = await client.placeMarket({ ticker, quantity: -Math.abs(quantity) });
+      recordSubmitted({ ticker, side: "SELL", quantity, env: config.t212.env });
+      removeOpenTrade(ticker);
+      console.log(`submitted. broker order ${order.id} status ${order.status}`);
       return;
     }
 
@@ -232,6 +315,8 @@ async function main(): Promise<void> {
   proposals               list saved proposals
   approve <id> [--qty N]  risk-check, confirm, then submit the order yourself
   reject <id> [--note s]  mark a proposal rejected
+  review                  check every open trade against its target, stop and 3-day clock
+  close <TICKER> [--qty]  confirm, then market-sell an open trade (--untrack to just forget it)
   orders                  open orders at the broker
   cancel <orderId>        cancel an open order
 
