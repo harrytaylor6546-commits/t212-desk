@@ -27,9 +27,9 @@ export interface Campaign {
 }
 
 export const DEFAULTS = {
-  takeProfitPct: 4,
-  stopLossPct: 10,
-  goalPct: 100,
+  takeProfitPct: 5,
+  stopLossPct: 4,
+  goalPct: 30,
   days: 7,
   maxOpen: 1,
 };
@@ -48,7 +48,7 @@ export async function saveCampaign(c: Campaign | null): Promise<void> {
 /** Parse "200 tp=5 sl=4 goal=30 days=7 open=2" style arguments. */
 export function parseCampaignArgs(args: string[]): { budget: number; opts: Partial<Campaign> & { days?: number } } {
   const budget = Number(args[0]);
-  if (!Number.isFinite(budget) || budget <= 0) throw new Error("usage: /campaign start <budget> [tp=4] [sl=10] [goal=100] [days=7] [open=1]");
+  if (!Number.isFinite(budget) || budget <= 0) throw new Error("usage: /campaign start <budget> [tp=5] [sl=4] [goal=30] [days=7] [open=1]");
   const opts: Partial<Campaign> & { days?: number } = {};
   for (const a of args.slice(1)) {
     const [k, v] = a.split("=");

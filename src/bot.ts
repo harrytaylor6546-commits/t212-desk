@@ -22,8 +22,8 @@ const PENDING_KEY = "pending-confirm";
 const PENDING_TTL_MS = 10 * 60 * 1000;
 
 const HELP = `Campaign (hands-off mode):
-/campaign start 200  invest 200 over a week, defaults tp=4 sl=10 goal=100 open=1
-   e.g. /campaign start 200 tp=5 sl=4 goal=30 days=7
+/campaign start 200  invest 200 over a week. Defaults: take profit 5%, stop 4%, goal +30%, one trade at a time
+   change any: /campaign start 200 tp=6 sl=3 goal=20 days=5 open=2
 /campaign  status
 /campaign stop  stop recommending (open trades still close on their rules)
 /campaign autoclose on|off
@@ -140,7 +140,7 @@ async function dispatch(chatId: string, text: string): Promise<string | undefine
         await saveCampaign(c);
         return `auto-close ${c.autoClose ? "on" : "off"}`;
       }
-      return "usage: /campaign start <budget> [tp=4 sl=10 goal=100 days=7 open=1] | /campaign status | /campaign stop | /campaign autoclose on|off";
+      return "usage: /campaign start <budget> [tp=5 sl=4 goal=30 days=7 open=1] | /campaign status | /campaign stop | /campaign autoclose on|off";
     }
     case "next": {
       const c = await getCampaign();
