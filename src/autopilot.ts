@@ -14,6 +14,9 @@ import { store } from "./store";
 import { sendMessage } from "./telegram";
 import { loadProposal, saveProposal } from "./proposals";
 import type { Position } from "./t212/types";
+import { gather } from "./research/index";
+import { triage } from "./agents/triage";
+import { mapLimit } from "./util";
 
 export interface PendingRecommendation {
   proposalId: string;
@@ -29,8 +32,10 @@ export interface PendingRecommendation {
 export const REC_KEY = "pending-recommendation";
 const REC_TTL_MS = 4 * 3600 * 1000;
 const SCAN_INTERVAL_MIN = Number(process.env.CAMPAIGN_SCAN_MIN_INTERVAL_MIN ?? 120);
-const ANALYSE_TOP = Number(process.env.CAMPAIGN_ANALYSE_TOP ?? 3);
+const TRIAGE_TOP = Number(process.env.CAMPAIGN_TRIAGE_TOP ?? 12);
+const ANALYSE_TOP = Number(process.env.CAMPAIGN_ANALYSE_TOP ?? 5);
 const MIN_CONFIDENCE = Number(process.env.CAMPAIGN_MIN_CONFIDENCE ?? 0.55);
+const MIN_CATALYST = Number(process.env.CAMPAIGN_MIN_CATALYST ?? 4);
 
 async function notify(text: string): Promise<void> {
   if (config.telegram.chatId) await sendMessage(config.telegram.chatId, text);
@@ -204,29 +209,63 @@ export async function tick(opts: { force?: boolean } = {}): Promise<string[]> {
 }
 
 async function recommend(c: Campaign, perTrade: number, exclude: string[], log: string[]): Promise<PendingRecommendation | null> {
+  // Stage 1+2: cheap pre-screen over the whole universe.
   const watch = (await getWatchlist()).filter((t) => !exclude.includes(t));
   const named = await desk.instrumentsFor(watch);
   const ranked = await prescreen(named);
-  const top = ranked.slice(0, ANALYSE_TOP);
-  log.push(`pre-screened ${ranked.length}, analysing: ${top.map((t) => `${t.ticker} (${t.score.toFixed(1)})`).join(", ")}`);
+  const shortlist = ranked.slice(0, TRIAGE_TOP);
+  log.push(`pre-screened ${ranked.length} of ${watch.length}. shortlist: ${shortlist.map((t) => `${t.ticker} ${t.score.toFixed(0)}`).join(", ")}`);
 
+  // Stage 3: gather full dossiers for the shortlist and let the cheap model rank catalysts.
+  const dossiers = (
+    await mapLimit(shortlist, 3, async (cand) => {
+      try {
+        return await gather(cand.ticker, cand.name);
+      } catch (e) {
+        log.push(`${cand.ticker}: research failed: ${(e as Error).message}`);
+        return null;
+      }
+    })
+  ).filter((d): d is NonNullable<typeof d> => d !== null);
+
+  let ordered = dossiers;
+  let triageNote = "";
+  try {
+    const ranks = await triage(dossiers);
+    const byTicker = new Map(dossiers.map((d) => [d.ticker, d]));
+    const upward = ranks.filter((r) => r.direction === "up" && r.catalystScore >= MIN_CATALYST);
+    ordered = upward.map((r) => byTicker.get(r.ticker)!).filter(Boolean);
+    triageNote = ranks.slice(0, 8).map((r) => `${r.ticker} ${r.catalystScore}/10 ${r.direction}`).join(", ");
+    log.push(`triage: ${triageNote}`);
+  } catch (e) {
+    log.push(`triage failed, falling back to pre-screen order: ${(e as Error).message}`);
+  }
+  const top = ordered.slice(0, ANALYSE_TOP);
+  if (!top.length) {
+    const line = `scan: ${ranked.length} names screened, ${dossiers.length} researched. Triage found no upward catalyst worth the analyst (${triageNote || "no scores"}). Will look again in ${SCAN_INTERVAL_MIN} min.`;
+    log.push(line);
+    await notify(line);
+    return null;
+  }
+
+  // Stage 4: the full analyst on the survivors, a few in parallel.
   const rules = `take profit at +${c.takeProfitPct}%, stop loss at -${c.stopLossPct}%, position size about ${perTrade.toFixed(0)} in account currency, must close within 3 trading days`;
   const results: { id: string; ticker: string; confidence: number; action: string; quality: string }[] = [];
-  for (const cand of top) {
+  await mapLimit(top, 3, async (dossier) => {
     try {
-      const { stored } = await desk.propose(cand.ticker, { rules });
+      const { stored } = await desk.proposeFromDossier(dossier, { rules });
       results.push({ id: stored.id, ticker: stored.proposal.ticker, confidence: stored.proposal.confidence, action: stored.proposal.action, quality: stored.proposal.dataQuality });
     } catch (e) {
-      log.push(`${cand.ticker}: analyst failed: ${(e as Error).message}`);
+      log.push(`${dossier.ticker}: analyst failed: ${(e as Error).message}`);
     }
-  }
+  });
   const best = results
     .filter((r) => r.action === "BUY" && r.quality !== "poor" && r.confidence >= MIN_CONFIDENCE)
     .sort((a, b) => b.confidence - a.confidence)[0];
 
   const summary = results.map((r) => `${r.ticker} ${r.action} ${(r.confidence * 100).toFixed(0)}%`).join(", ");
   if (!best) {
-    const line = `scan: ${summary || "no results"}. Nothing met the bar, will look again in ${SCAN_INTERVAL_MIN} min.`;
+    const line = `scan: ${ranked.length} screened, ${dossiers.length} researched, ${results.length} analysed: ${summary || "no results"}.\nNothing met the bar, will look again in ${SCAN_INTERVAL_MIN} min.`;
     log.push(line);
     await notify(line);
     return null;
@@ -253,7 +292,7 @@ async function recommend(c: Campaign, perTrade: number, exclude: string[], log: 
     expected: approvalPhrase(),
   };
   await store.set(REC_KEY, rec);
-  const line = `RECOMMENDATION (others: ${summary})\n\n${text}\n\nReply ${rec.expected} to buy ~${plan.estimatedValue.toFixed(2)} ${plan.currency} of ${best.ticker}.\nReply /skip to pass. Expires in 4 hours.`;
+  const line = `RECOMMENDATION (${ranked.length} screened, ${dossiers.length} researched, analysed: ${summary})\n\n${text}\n\nReply ${rec.expected} to buy ~${plan.estimatedValue.toFixed(2)} ${plan.currency} of ${best.ticker}.\nReply /skip to pass. Expires in 4 hours.`;
   log.push(`recommended ${best.ticker}`);
   await notify(line);
   return rec;

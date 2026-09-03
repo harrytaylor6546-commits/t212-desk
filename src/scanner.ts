@@ -1,23 +1,20 @@
 import { store } from "./store";
 import { googleNews, yahooPrice } from "./research/sources";
 import { toYahooSymbol } from "./research/index";
+import { DEFAULT_UNIVERSE } from "./universe";
+import { mapLimit } from "./util";
 
 /**
- * Candidate selection for the campaign. A cheap, keyless pre-screen (price move + news
- * volume) ranks the watchlist, and only the top few go to the analyst, which costs money.
+ * Candidate selection for the campaign, in two cheap stages before anything costs money:
+ *   1. price only, across the whole universe: move, gap, volume versus normal
+ *   2. news volume in the last 48 hours, on the top slice
  */
 
-export const DEFAULT_WATCHLIST = [
-  // London
-  "RRl_EQ", "BARCl_EQ", "LLOYl_EQ", "NWGl_EQ", "HSBAl_EQ", "BPl_EQ", "SHELl_EQ", "AZNl_EQ", "GSKl_EQ",
-  "BAl_EQ", "RIOl_EQ", "GLENl_EQ", "ULVRl_EQ", "TSCOl_EQ", "VODl_EQ", "IAGl_EQ", "EZJl_EQ", "LGENl_EQ",
-  "AVl_EQ", "DGEl_EQ", "BATSl_EQ", "MKSl_EQ", "OCDOl_EQ", "JDl_EQ",
-  // US
-  "AAPL_US_EQ", "MSFT_US_EQ", "NVDA_US_EQ", "AMZN_US_EQ", "GOOGL_US_EQ", "META_US_EQ", "TSLA_US_EQ",
-  "AMD_US_EQ", "NFLX_US_EQ", "PLTR_US_EQ", "COIN_US_EQ", "UBER_US_EQ", "DIS_US_EQ", "BA_US_EQ", "JPM_US_EQ",
-];
+export const DEFAULT_WATCHLIST = DEFAULT_UNIVERSE;
 
 const KEY = "watchlist";
+const CACHE_KEY = "prescreen-cache";
+const CACHE_TTL_MS = 45 * 60 * 1000;
 
 export async function getWatchlist(): Promise<string[]> {
   return (await store.get<string[]>(KEY)) ?? DEFAULT_WATCHLIST;
@@ -33,37 +30,44 @@ export interface Candidate {
   score: number;
   change1d?: number;
   change5d?: number;
+  gapPct?: number;
+  relVolume?: number;
   recentNews: number;
 }
 
-async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = [];
-  let i = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (i < items.length) {
-      const idx = i++;
-      out[idx] = await fn(items[idx]);
-    }
-  });
-  await Promise.all(workers);
-  return out;
-}
+export async function prescreen(
+  tickers: { ticker: string; name: string }[],
+  opts: { newsTop?: number; useCache?: boolean } = {},
+): Promise<Candidate[]> {
+  const newsTop = opts.newsTop ?? 25;
+  if (opts.useCache !== false) {
+    const cached = await store.get<{ at: number; ranked: Candidate[]; n: number }>(CACHE_KEY);
+    if (cached && Date.now() - cached.at < CACHE_TTL_MS && cached.n === tickers.length) return cached.ranked;
+  }
 
-/** Rank tickers by how much is going on: recent price movement plus news in the last two days. */
-export async function prescreen(tickers: { ticker: string; name: string }[]): Promise<Candidate[]> {
-  const cutoff = Date.now() - 2 * 24 * 3600 * 1000;
-  const scored = await mapLimit(tickers, 5, async ({ ticker, name }): Promise<Candidate> => {
-    const symbol = toYahooSymbol(ticker);
-    const [price, news] = await Promise.all([
-      yahooPrice(symbol).catch(() => undefined),
-      googleNews(`"${name}" OR ${symbol.split(".")[0]} shares`, 15).catch(() => []),
-    ]);
-    const recentNews = news.filter((n) => n.publishedAt && new Date(n.publishedAt).getTime() > cutoff).length;
+  // Stage 1: price only, whole universe.
+  const stage1 = await mapLimit(tickers, 8, async ({ ticker, name }): Promise<Candidate> => {
+    const price = await yahooPrice(toYahooSymbol(ticker), "3mo").catch(() => undefined);
     const c1 = price?.change1d ?? 0;
     const c5 = price?.change5d ?? 0;
-    // Movement is interesting in either direction. News volume is the tie-breaker.
-    const score = Math.abs(c1) * 2 + Math.abs(c5) + recentNews * 1.5;
-    return { ticker, name, score, change1d: price?.change1d, change5d: price?.change5d, recentNews };
+    const gap = price?.gapPct ?? 0;
+    const rv = price?.relVolume ?? 1;
+    const score = Math.abs(c1) * 2 + Math.abs(c5) + Math.abs(gap) * 2 + Math.max(0, rv - 1) * 4;
+    return { ticker, name, score: price ? score : -1, change1d: price?.change1d, change5d: price?.change5d, gapPct: price?.gapPct, relVolume: price?.relVolume, recentNews: 0 };
   });
-  return scored.sort((a, b) => b.score - a.score);
+  const ranked = stage1.filter((c) => c.score >= 0).sort((a, b) => b.score - a.score);
+
+  // Stage 2: news volume on the top slice.
+  const cutoff = Date.now() - 2 * 24 * 3600 * 1000;
+  const top = ranked.slice(0, newsTop);
+  await mapLimit(top, 5, async (c) => {
+    const symbol = toYahooSymbol(c.ticker);
+    const news = await googleNews(`"${c.name}" OR ${symbol.split(".")[0]} shares`, 15).catch(() => []);
+    c.recentNews = news.filter((n) => n.publishedAt && new Date(n.publishedAt).getTime() > cutoff).length;
+    c.score += c.recentNews * 1.5;
+  });
+  ranked.sort((a, b) => b.score - a.score);
+
+  await store.set(CACHE_KEY, { at: Date.now(), ranked, n: tickers.length });
+  return ranked;
 }

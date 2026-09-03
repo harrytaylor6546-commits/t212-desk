@@ -27,14 +27,18 @@ The same commands work from a laptop CLI, which is useful for the first connecti
 
 The desk then runs a loop on its own:
 
-1. Pre-screens the watchlist (price movement plus news volume, no cost), sends the top three to the analyst, and if one is a BUY above the confidence bar it messages you a recommendation sized to the campaign slot.
+1. Scans in four stages, cheap to expensive. Pre-screens the whole universe (FTSE 100 plus about 130 large US names, roughly 240 in total) on price move, gap and volume versus normal, then news volume on the top 25. Gathers a full dossier for the top 12 and has a fast, cheap model rank them by short-term catalyst. Sends the best 5 with an upward catalyst to the full analyst. If one is a BUY above the confidence bar it messages you a recommendation sized to the campaign slot.
 2. You reply `APPROVE` (or `APPROVE LIVE` on a live account). Anything else leaves it waiting; `/skip` passes.
 3. It checks every open campaign trade on each tick and closes automatically at the take-profit, the stop-loss, or the three-day limit, then immediately looks for the next trade.
 4. It stops when total profit reaches the goal (closing everything), when the days run out, or when you send `/campaign stop`.
 
 Settings: `tp` take-profit %, `sl` stop-loss %, `goal` % of budget, `days`, `open` max simultaneous trades. Defaults are tp=5 sl=4 goal=30 days=7 open=1. Override any of them inline, e.g. `/campaign start 200 tp=6 sl=3 goal=20`. Keep the stop smaller than the target: risking 10 to make 4 needs a 72% hit rate just to break even.
 
-`/watch` shows the watchlist, `/watch add RRl_EQ` and `/watch remove ...` edit it, `/watch reset` restores the default 40 liquid UK and US names.
+`/watch` shows the universe, `/watch add RRl_EQ` and `/watch remove ...` edit it, `/watch reset` restores the default list in `src/universe.ts`.
+
+Each dossier draws on: Yahoo price history with technicals (SMA20/50, RSI, gap, relative volume), a market backdrop line (FTSE, S&P, Nasdaq, VIX, GBP/USD), Google News, Yahoo Finance news, Reddit, StockTwits for US names, SEC filings for US names, and optionally Finnhub company news and earnings dates (`FINNHUB_API_KEY`, free), X (`X_BEARER_TOKEN`, paid) and Tavily web search (`TAVILY_API_KEY`).
+
+Cost per scan is roughly 5 analyst calls at about 20p each plus a few pence of triage, so around £1. Scans run at most every two hours while a slot is free (`CAMPAIGN_SCAN_MIN_INTERVAL_MIN`). Tune the funnel with `CAMPAIGN_TRIAGE_TOP`, `CAMPAIGN_ANALYSE_TOP`, `CAMPAIGN_MIN_CATALYST` and `CAMPAIGN_MIN_CONFIDENCE`.
 
 **Ticks.** Exits only happen when a tick runs. The Vercel cron in `vercel.json` runs once a day as a fallback, which is not enough for a 4% target. Point a free external scheduler at the tick endpoint every 15 minutes during market hours. On cron-job.org:
 

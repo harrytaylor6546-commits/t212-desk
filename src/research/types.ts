@@ -1,5 +1,5 @@
 export interface Item {
-  source: "news" | "reddit" | "stocktwits" | "x" | "web" | "price";
+  source: "news" | "yahoo" | "reddit" | "stocktwits" | "x" | "web" | "filing" | "earnings" | "price";
   title: string;
   url?: string;
   publishedAt?: string;
@@ -16,6 +16,15 @@ export interface PriceSummary {
   change3m?: number;
   high52w?: number;
   low52w?: number;
+  /** Simple technicals from daily bars. */
+  sma20?: number;
+  sma50?: number;
+  rsi14?: number;
+  /** Today's volume divided by the 20-day average. Partial during the session. */
+  relVolume?: number;
+  /** Today's open versus yesterday's close, percent. */
+  gapPct?: number;
+  pctFromHigh52w?: number;
   bars: { date: string; close: number; volume?: number }[];
 }
 
@@ -25,6 +34,7 @@ export interface Dossier {
   name: string;
   gatheredAt: string;
   price?: PriceSummary;
+  market?: string;
   items: Item[];
   errors: string[];
 }

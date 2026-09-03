@@ -120,9 +120,9 @@ async function dispatch(chatId: string, text: string): Promise<string | undefine
           return `budget ${budget} is above what the risk gate allows (RISK_MAX_ORDER_VALUE ${config.risk.maxOrderValue} per trade x ${c.maxOpen} open). Raise that setting in Vercel first, or start with a smaller budget.`;
         }
         await saveCampaign(c);
-        await sendMessage(chatId, `campaign started. Scanning the watchlist now, this takes a few minutes.\n\n${await autopilot.statusText()}`);
-        const log = await autopilot.tick({ force: true });
-        return log.some((l) => l.startsWith("recommended")) ? undefined : log.join("\n");
+        await sendMessage(chatId, `campaign started. Scanning now, this takes a few minutes.\n\n${await autopilot.statusText()}`);
+        await autopilot.tick({ force: true }); // the tick messages you itself
+        return undefined;
       }
       if (sub === "stop") {
         const c = await getCampaign();
@@ -147,7 +147,9 @@ async function dispatch(chatId: string, text: string): Promise<string | undefine
       if (!c || c.status !== "active") return "no active campaign. /campaign start 200";
       await sendMessage(chatId, "scanning now, a few minutes...");
       const log = await autopilot.tick({ force: true });
-      return log.some((l) => l.startsWith("recommended")) ? undefined : log.join("\n");
+      // The tick messages you with the outcome itself. Only relay if it stopped early without one.
+      const spoke = log.some((l) => l.startsWith("recommended") || l.startsWith("scan:") || l.startsWith("recommendation "));
+      return spoke ? undefined : log.join("\n");
     }
     case "skip":
       return autopilot.skipRecommendation();

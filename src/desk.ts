@@ -6,6 +6,7 @@
 import { config } from "./config";
 import { T212Client } from "./t212/client";
 import { gather, renderDossier } from "./research/index";
+import type { Dossier } from "./research/types";
 import { analyse } from "./agents/analyst";
 import { checkRisk, recordSubmitted } from "./risk";
 import { toAccountCurrency } from "./fx";
@@ -123,7 +124,14 @@ export function formatProposal(p: StoredProposal): string {
 
 export async function propose(input: string, opts: { rules?: string } = {}): Promise<{ stored: StoredProposal; text: string }> {
   const { ticker, name } = await resolveTicker(input);
-  const [dossier, context, instrument] = await Promise.all([gather(ticker, name), accountContext(ticker), client.instrument(ticker)]);
+  const dossier = await gather(ticker, name);
+  return proposeFromDossier(dossier, opts);
+}
+
+/** Same as propose, for a dossier that has already been gathered (the campaign scan reuses them). */
+export async function proposeFromDossier(dossier: Dossier, opts: { rules?: string } = {}): Promise<{ stored: StoredProposal; text: string }> {
+  const ticker = dossier.ticker;
+  const [context, instrument] = await Promise.all([accountContext(ticker), client.instrument(ticker)]);
   if (!context.lastPrice && dossier.price?.last) context.lastPrice = dossier.price.last;
   const proposal = await analyse(dossier, { ...context, rules: opts.rules });
   const stored: StoredProposal = {
