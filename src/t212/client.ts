@@ -36,9 +36,14 @@ let instrumentMemo: InstrumentCache | undefined;
  * Live accounts currently accept MARKET orders only through the API.
  * Instruments are cached for a day because that endpoint allows one call per 50s.
  */
+// Module-level so every T212Client in the same process shares one queue and one cache.
+const queues = new Map<string, Promise<void>>();
+const lastCall = new Map<string, number>();
+const memo = new Map<string, { at: number; value: unknown }>();
+const MEMO_TTL_MS = 4000;
+
 export class T212Client {
   private readonly base = config.t212.baseUrl;
-  private lastCall = new Map<string, number>();
 
   readonly env = config.t212.env;
 
@@ -51,12 +56,22 @@ export class T212Client {
     return apiKey;
   }
 
-  /** Simple client-side throttle so we stay under the per-endpoint limits. */
-  private async throttle(key: string, minGapMs: number): Promise<void> {
-    const last = this.lastCall.get(key) ?? 0;
-    const wait = last + minGapMs - Date.now();
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-    this.lastCall.set(key, Date.now());
+  /**
+   * Per-endpoint throttle. Calls with the same key run one at a time, spaced by minGapMs,
+   * so a burst of overlapping calls cannot trip Trading 212's limits.
+   */
+  private throttled<T>(key: string, minGapMs: number, fn: () => Promise<T>): Promise<T> {
+    const prev = queues.get(key) ?? Promise.resolve();
+    const run = prev
+      .catch(() => undefined)
+      .then(async () => {
+        const wait = (lastCall.get(key) ?? 0) + minGapMs - Date.now();
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        lastCall.set(key, Date.now());
+        return fn();
+      });
+    queues.set(key, run.then(() => undefined, () => undefined));
+    return run;
   }
 
   private async request<T>(
@@ -66,20 +81,41 @@ export class T212Client {
     throttleKey = p,
     minGapMs = 1000,
   ): Promise<T> {
-    await this.throttle(throttleKey, minGapMs);
-    const res = await fetch(this.base + p, {
-      method,
-      headers: {
-        Authorization: this.authHeader(),
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(25_000),
-    });
-    const text = await res.text();
-    if (!res.ok) throw new T212Error(res.status, text, p);
-    return (text ? JSON.parse(text) : null) as T;
+    // Repeated reads of the same account endpoint within a few seconds return the cached answer.
+    const cacheable = method === "GET" && body === undefined;
+    if (cacheable) {
+      const hit = memo.get(p);
+      if (hit && Date.now() - hit.at < MEMO_TTL_MS) return hit.value as T;
+    }
+    const call = async (): Promise<T> => {
+      const res = await fetch(this.base + p, {
+        method,
+        headers: {
+          Authorization: this.authHeader(),
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(25_000),
+      });
+      const text = await res.text();
+      if (!res.ok) throw new T212Error(res.status, text, p);
+      return (text ? JSON.parse(text) : null) as T;
+    };
+    let value: T;
+    try {
+      value = await this.throttled(throttleKey, minGapMs, call);
+    } catch (e) {
+      // One retry on a rate limit, after the endpoint's full gap.
+      if (e instanceof T212Error && e.status === 429 && cacheable) {
+        await new Promise((r) => setTimeout(r, Math.max(minGapMs, 5000)));
+        value = await this.throttled(throttleKey, minGapMs, call);
+      } else {
+        throw e;
+      }
+    }
+    if (cacheable) memo.set(p, { at: Date.now(), value });
+    return value;
   }
 
   // ---- account ----
@@ -123,18 +159,29 @@ export class T212Client {
     return items;
   }
 
+  /** Word-based search: "rolls royce" matches "Rolls-Royce Holdings". */
   async findInstruments(query: string): Promise<Instrument[]> {
-    const q = query.toLowerCase();
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const words = norm(query).split(" ").filter(Boolean);
+    if (!words.length) return [];
     const all = await this.instruments();
-    return all
-      .filter(
-        (i) =>
-          i.ticker.toLowerCase().includes(q) ||
-          i.name.toLowerCase().includes(q) ||
-          (i.shortName ?? "").toLowerCase().includes(q) ||
-          (i.isin ?? "").toLowerCase() === q,
-      )
-      .slice(0, 25);
+    const exactTicker = all.filter((i) => i.ticker.toLowerCase() === query.toLowerCase());
+    const matches = all.filter((i) => {
+      const hay = `${norm(i.ticker)} ${norm(i.name)} ${norm(i.shortName ?? "")} ${(i.isin ?? "").toLowerCase()}`;
+      return words.every((w) => hay.includes(w));
+    });
+    // Prefer names that start with the query, then shorter names.
+    const first = words[0];
+    matches.sort((a, b) => {
+      const as = norm(a.name).startsWith(first) ? 0 : 1;
+      const bs = norm(b.name).startsWith(first) ? 0 : 1;
+      return as - bs || a.name.length - b.name.length;
+    });
+    return [...exactTicker, ...matches.filter((m) => !exactTicker.includes(m))].slice(0, 25);
+  }
+
+  async instrumentCount(): Promise<number> {
+    return (await this.instruments()).length;
   }
 
   async instrument(ticker: string): Promise<Instrument | undefined> {

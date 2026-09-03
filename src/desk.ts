@@ -67,7 +67,7 @@ export async function portfolioText(): Promise<string> {
 
 export async function findText(query: string): Promise<string> {
   const matches = await client.findInstruments(query);
-  if (!matches.length) return "no matches";
+  if (!matches.length) return `no matches for "${query}" among ${await client.instrumentCount()} instruments`;
   return matches.map((m) => `${m.ticker}  ${m.name}  (${m.currencyCode}, ${m.type})`).join("\n");
 }
 
